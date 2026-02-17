@@ -80,7 +80,6 @@ Conditional recipients (parse from email body **only when NO ICS**):
   - Provide **old details vs new details**
   - **Wait for confirmation** before updating
 
-## Confirmation channel (TBD)
+## Confirmation channel
 
-- You requested confirmation via **Telegram**, but Telegram may not be configured yet.
-- Decide: Telegram vs webchat vs email.
+- **Changed-event confirmations** are requested via **Telegram DM** (allowlisted).
