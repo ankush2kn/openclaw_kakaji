@@ -14,6 +14,9 @@ RULES_FILE="$WORKDIR/EMAIL_CALENDAR_RULES.md"
 ACCOUNT="${ACCOUNT:-botbhargava@gmail.com}"
 CALENDAR_ID="${CALENDAR_ID:-botbhargava@gmail.com}"
 TZ="${TZ:-America/Los_Angeles}"
+# RFC3339 offset suffix used when we parse naive local times.
+# Default to Pacific time offset; update for DST if needed.
+TZ_SUFFIX="${TZ_SUFFIX:--08:00}"
 
 WINDOW_HOURS="${WINDOW_HOURS:-2}"
 AFTER_DATE="${AFTER_DATE:-2026/02/15}"
@@ -88,88 +91,8 @@ download_thread_attachments() {
 }
 
 extract_basic_event_json() {
-  # Very lightweight, deterministic fallback extraction.
-  # Reads a thread JSON (with --full) and tries to extract:
-  # - title from Subject
-  # - location: first line containing 'Location:' or an address-like line
-  # - start/end date+time: tries to find explicit date (YYYY-MM-DD or Month Day, Year) and time range (e.g. 9:00 AM - 4:00 PM)
-  # Output JSON: {summary, location, start, end, needs_confirmation, reason}
-  python3 - "$@" <<'PY'
-import json,re,sys
-from datetime import datetime,timedelta
-
-thread=json.load(sys.stdin).get('thread') or {}
-msgs=thread.get('messages') or []
-if not msgs:
-    print(json.dumps({"needs_confirmation": True, "reason": "empty_thread"}))
-    sys.exit(0)
-
-# Use last message headers preferentially
-headers=(msgs[-1].get('payload') or {}).get('headers') or []
-hmap={h.get('name','').lower(): h.get('value','') for h in headers}
-subject=hmap.get('subject') or '(no subject)'
-
-# Combine snippet + any plain text parts if present in gog output
-texts=[]
-for m in msgs:
-    sn=m.get('snippet')
-    if sn: texts.append(sn)
-text='\n'.join(texts)
-
-# Find time range
-time_re=re.compile(r'(\b\d{1,2}:\d{2}\s*(?:AM|PM)\b)\s*(?:-|to)\s*(\b\d{1,2}:\d{2}\s*(?:AM|PM)\b)', re.I)
-mt=time_re.search(text)
-start_t=end_t=None
-if mt:
-    start_t=mt.group(1).upper().replace(' ', '')
-    end_t=mt.group(2).upper().replace(' ', '')
-
-# Find explicit date like "February 17, 2026" or "Feb 17, 2026"
-date_re=re.compile(r'\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2}),\s*(\d{4})\b', re.I)
-md=date_re.search(text)
-date=None
-if md:
-    mon=md.group(1)
-    day=int(md.group(2))
-    year=int(md.group(3))
-    date=datetime.strptime(f"{mon} {day} {year}", "%b %d %Y") if len(mon)<=3 else datetime.strptime(f"{mon} {day} {year}", "%B %d %Y")
-
-# Location heuristic
-loc=None
-loc_re=re.compile(r'\bLocation\s*:\s*(.+)', re.I)
-ml=loc_re.search(text)
-if ml:
-    loc=ml.group(1).strip()
-
-needs=False
-reason=[]
-if date is None:
-    needs=True; reason.append('missing_date')
-if start_t is None or end_t is None:
-    needs=True; reason.append('missing_time_range')
-
-def parse_time(t):
-    return datetime.strptime(t, "%I:%M%p")
-
-start=None; end=None
-if not needs:
-    st=parse_time(start_t)
-    et=parse_time(end_t)
-    start=date.replace(hour=st.hour, minute=st.minute)
-    end=date.replace(hour=et.hour, minute=et.minute)
-    if end <= start:
-        end = end + timedelta(hours=1)
-
-out={
-  "summary": subject,
-  "location": loc,
-  "start": start.isoformat() if start else None,
-  "end": end.isoformat() if end else None,
-  "needs_confirmation": needs,
-  "reason": ','.join(reason) if reason else None,
-}
-print(json.dumps(out))
-PY
+  # Deterministic fallback extraction implemented as a standalone script.
+  "$WORKDIR/scripts/extract_basic_event_json.py"
 }
 
 create_calendar_event() {
@@ -216,7 +139,9 @@ with open(p,'r',encoding='utf-8') as f:
 threads=j.get('threads') or []
 for t in threads:
     tid=t.get('id')
-    if tid:
+    labels=set(t.get('labels') or [])
+    # Avoid infinite loops: don't process already-labeled threads.
+    if tid and 'processed' not in labels:
         print(tid)
 PY
   )
@@ -231,11 +156,114 @@ PY
 
     # Check for ICS
     if [[ "$(thread_has_ics "$tid")" == "yes" ]]; then
-      # Download ICS attachments. We don't need to do anything else: calendar invites typically
-      # auto-create the event in Google Calendar once received/accepted.
+      # ICS path: download .ics, parse, create event, invite default attendees.
       gog gmail thread attachments "$tid" --account "$ACCOUNT" --download --out-dir "$tdir" --json >/dev/null
-      mark_thread_processed "$tid"
+
+      # Pick the first downloaded .ics
+      ics_path=$(ls -1 "$tdir"/*.ics 2>/dev/null | head -n 1 || true)
+      if [[ -z "${ics_path:-}" ]]; then
+        needs_conf=$((needs_conf+1))
+        conf_items+=("$tid: had ICS attachment but no .ics file was downloaded.")
+        continue
+      fi
+
+      event_json=$("$WORKDIR/scripts/ics_to_event.py" "$ics_path")
+
+      # If parser returned error, request confirmation.
+      if python3 - <<'PY' "$event_json"; then
+import json,sys
+j=json.loads(sys.argv[1])
+if 'error' in j:
+    raise SystemExit(1)
+PY
+        :
+      else
+        needs_conf=$((needs_conf+1))
+        conf_items+=("$tid: unable to parse ICS deterministically.")
+        continue
+      fi
+
+      # Extract fields
+      summary=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1])
+print(j.get('summary') or '')
+PY
+      )
+      description=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1])
+print(j.get('description') or '')
+PY
+      )
+      location=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1])
+print(j.get('location') or '')
+PY
+      )
+
+      # Determine whether all-day or dateTime
+      is_all_day=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1])
+print('yes' if 'date' in (j.get('start') or {}) else 'no')
+PY
+      )
+
+      if [[ "$is_all_day" == "yes" ]]; then
+        start=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1])
+print(j['start']['date'])
+PY
+        )
+        end=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1])
+print(j['end']['date'])
+PY
+        )
+        # Create all-day event
+        gog calendar create "$CALENDAR_ID" \
+          --account "$ACCOUNT" \
+          --summary "$summary" \
+          --from "$start" \
+          --to "$end" \
+          --all-day \
+          ${location:+--location "$location"} \
+          --description "${description}\n\nSource thread: $tid" \
+          --attendees "$(join_by , "${DEFAULT_ATTENDEES[@]}")" \
+          --send-updates all \
+          --json >"$tdir/created_event.json"
+      else
+        start=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1])
+print(j['start'].get('dateTime') or '')
+PY
+        )
+        end=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1])
+print(j['end'].get('dateTime') or '')
+PY
+        )
+
+        # If timeZone is missing (floating), assume configured TZ
+        if [[ "$start" != *"Z"* && "$start" != *"+"* && "$start" != *"-"* ]]; then
+          # ISO without offset; append TZ offset is hard — instead, fail to confirmation.
+          needs_conf=$((needs_conf+1))
+          conf_items+=("$tid: ICS has floating times (no TZ).")
+          continue
+        fi
+
+        create_calendar_event "$summary" "$start" "$end" "$location" "${description}\n\nSource thread: $tid" >"$tdir/created_event.json"
+      fi
+
+      created=$((created+1))
       acted=$((acted+1))
+      mark_thread_processed "$tid"
       continue
     fi
 
@@ -286,6 +314,14 @@ import json,sys
 j=json.loads(sys.argv[1]); print(j.get('location') or '')
 PY
     )
+
+    # If parsed times are naive (no timezone/offset), assume configured TZ.
+    if [[ ! "$start" =~ (Z|[+-][0-9]{2}:[0-9]{2})$ ]]; then
+      start="${start}${TZ_SUFFIX}"
+    fi
+    if [[ ! "$end" =~ (Z|[+-][0-9]{2}:[0-9]{2})$ ]]; then
+      end="${end}${TZ_SUFFIX}"
+    fi
 
     # Duplicate check: search calendar for same summary near start time (simple heuristic)
     # NOTE: gog search is query-based, so we'll do a best-effort search by summary.
