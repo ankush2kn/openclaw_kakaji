@@ -1,0 +1,10 @@
+# OpenClaw runtime / local state
+.openclaw/
+tmp/
+
+# Python
+__pycache__/
+*.pyc
+
+# Secrets
+client_secret.json

@@ -30,6 +30,10 @@ ALLOWLIST_FROM=(
 
 DEFAULT_ATTENDEES=("ankush@gmail.com" "shuchicapri@gmail.com")
 
+# For LLM extraction (OpenRouter)
+OPENROUTER_MODEL="${OPENROUTER_MODEL:-openai/gpt-5-nano}"
+# OPENROUTER_API_KEY must be set in the environment at runtime.
+
 PROCESSED_LABEL="processed"
 
 OUTDIR_BASE="$WORKDIR/tmp/automation"
@@ -267,21 +271,21 @@ PY
       continue
     fi
 
-    # No ICS: fetch thread (full) and try basic deterministic parse
+    # No ICS: fetch thread (full) and extract event + instructions via LLM
     gog gmail thread get "$tid" --account "$ACCOUNT" --full --json >"$tdir/thread.json"
 
     local event_json
-    event_json=$(cat "$tdir/thread.json" | extract_basic_event_json)
+    event_json=$(cat "$tdir/thread.json" | OPENROUTER_MODEL="${OPENROUTER_MODEL:-openai/gpt-5-nano}" OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" "$WORKDIR/scripts/llm_extract_event.py")
 
-    local ok
-    ok=$(python3 - <<'PY' "$event_json"
+    local needs
+    needs=$(python3 - <<'PY' "$event_json"
 import json,sys
 j=json.loads(sys.argv[1])
-print('ok' if not j.get('needs_confirmation') else 'no')
+print('yes' if j.get('needs_confirmation') else 'no')
 PY
     )
 
-    if [[ "$ok" != "ok" ]]; then
+    if [[ "$needs" == "yes" ]]; then
       needs_conf=$((needs_conf+1))
       reason=$(python3 - <<'PY' "$event_json"
 import json,sys
@@ -289,11 +293,11 @@ j=json.loads(sys.argv[1])
 print(j.get('reason') or 'unknown')
 PY
       )
-      conf_items+=("$tid: unable to extract event deterministically ($reason).")
+      conf_items+=("$tid: needs confirmation ($reason).")
       continue
     fi
 
-    local summary start end location
+    local summary start end location agenda
     summary=$(python3 - <<'PY' "$event_json"
 import json,sys
 j=json.loads(sys.argv[1]); print(j.get('summary') or '')
@@ -314,23 +318,77 @@ import json,sys
 j=json.loads(sys.argv[1]); print(j.get('location') or '')
 PY
     )
+    agenda=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1]); print(j.get('agenda') or '')
+PY
+    )
 
-    # If parsed times are naive (no timezone/offset), assume configured TZ.
-    if [[ ! "$start" =~ (Z|[+-][0-9]{2}:[0-9]{2})$ ]]; then
-      start="${start}${TZ_SUFFIX}"
+    # Attendee instructions
+    local add_csv remove_csv send_updates
+    add_csv=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1]); print(','.join(j.get('attendees_add') or []))
+PY
+    )
+    remove_csv=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1]); print(','.join(j.get('attendees_remove') or []))
+PY
+    )
+    send_updates=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1]); print(j.get('send_updates') or '')
+PY
+    )
+
+    # Apply remove list to DEFAULT_ATTENDEES; append any add list
+    # shellcheck disable=SC2207
+    local attendees=("${DEFAULT_ATTENDEES[@]}")
+    if [[ -n "$remove_csv" ]]; then
+      IFS=',' read -r -a _rm <<<"$remove_csv"
+      for rm in "${_rm[@]}"; do
+        rm=${rm// /}
+        if [[ -z "$rm" ]]; then continue; fi
+        local filtered=()
+        for a in "${attendees[@]}"; do
+          if [[ "${a,,}" != "${rm,,}" ]]; then filtered+=("$a"); fi
+        done
+        attendees=("${filtered[@]}")
+      done
     fi
-    if [[ ! "$end" =~ (Z|[+-][0-9]{2}:[0-9]{2})$ ]]; then
-      end="${end}${TZ_SUFFIX}"
+    if [[ -n "$add_csv" ]]; then
+      IFS=',' read -r -a _add <<<"$add_csv"
+      for ad in "${_add[@]}"; do
+        ad=${ad// /}
+        [[ -z "$ad" ]] && continue
+        attendees+=("$ad")
+      done
     fi
 
-    # Duplicate check: search calendar for same summary near start time (simple heuristic)
-    # NOTE: gog search is query-based, so we'll do a best-effort search by summary.
+    # De-dup attendees
+    local deduped=()
+    for a in "${attendees[@]}"; do
+      local seen=0
+      for b in "${deduped[@]}"; do
+        if [[ "${a,,}" == "${b,,}" ]]; then seen=1; break; fi
+      done
+      [[ $seen -eq 0 ]] && deduped+=("$a")
+    done
+    attendees=("${deduped[@]}")
+
+    # Sanity: require start/end
+    if [[ -z "$start" || -z "$end" ]]; then
+      needs_conf=$((needs_conf+1))
+      conf_items+=("$tid: missing start/end after LLM extraction.")
+      continue
+    fi
+
+    # Duplicate check: search calendar for same summary, and match exact start/end.
     if gog calendar search "$summary" --account "$ACCOUNT" --json | python3 - <<'PY' "$start" "$end"
 import json,sys
-from datetime import datetime
 start=sys.argv[1]; end=sys.argv[2]
 res=json.load(sys.stdin).get('events') or []
-# If any event matches exact start/end, treat as duplicate.
 for e in res:
     s=(e.get('start') or {}).get('dateTime')
     t=(e.get('end') or {}).get('dateTime')
@@ -339,14 +397,38 @@ for e in res:
 sys.exit(1)
 PY
     then
-      # duplicate: just mark processed
       mark_thread_processed "$tid"
       acted=$((acted+1))
       continue
     fi
 
-    # Create event
-    create_calendar_event "$summary" "$start" "$end" "$location" "Source thread: $tid" >"$tdir/created_event.json"
+    # Create event with custom attendees + optional send_updates
+    attendees_csv="$(join_by , "${attendees[@]}")"
+
+    if [[ -n "$send_updates" ]]; then
+      gog calendar create "$CALENDAR_ID" \
+        --account "$ACCOUNT" \
+        --summary "$summary" \
+        --from "$start" \
+        --to "$end" \
+        ${location:+--location "$location"} \
+        --description "${agenda:-}\n\nSource thread: $tid" \
+        --attendees "$attendees_csv" \
+        --send-updates "$send_updates" \
+        --json >"$tdir/created_event.json"
+    else
+      gog calendar create "$CALENDAR_ID" \
+        --account "$ACCOUNT" \
+        --summary "$summary" \
+        --from "$start" \
+        --to "$end" \
+        ${location:+--location "$location"} \
+        --description "${agenda:-}\n\nSource thread: $tid" \
+        --attendees "$attendees_csv" \
+        --send-updates all \
+        --json >"$tdir/created_event.json"
+    fi
+
     created=$((created+1))
     acted=$((acted+1))
 
