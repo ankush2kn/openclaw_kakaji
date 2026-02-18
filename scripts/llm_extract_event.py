@@ -114,7 +114,7 @@ def call_openrouter(prompt: dict) -> dict:
         "location": "string|null",
         "agenda": "string|null",
         "attendees_add": "array of email strings (can be empty)",
-        "attendees_remove": "array of email strings (can be empty)",
+        "attendees_remove": "array of email strings (lowercase emails only; MUST be full email addresses)",
         "send_updates": "one of: all|externalOnly|none|null",
     }
 
@@ -122,7 +122,7 @@ def call_openrouter(prompt: dict) -> dict:
         "task": (
             "From the email content, extract: summary, start, end, location, agenda. "
             "Also detect special instructions about who to invite or avoid inviting. "
-            "If the sender explicitly says not to invite someone, put them in attendees_remove. "
+            "If the sender explicitly says not to invite someone, put their FULL EMAIL ADDRESS in attendees_remove (lowercase). "
             "If the sender says invite someone specific, put them in attendees_add. "
             "If start/end time, timezone, or date are unclear, set needs_confirmation=true and explain briefly in reason."
         ),

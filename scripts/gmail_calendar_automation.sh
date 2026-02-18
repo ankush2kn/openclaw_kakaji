@@ -357,9 +357,19 @@ PY
       for rm in "${_rm[@]}"; do
         rm=${rm// /}
         if [[ -z "$rm" ]]; then continue; fi
+
+        # Support either full emails (preferred) or a short token like "shuchi" by matching local-part.
+        local rm_lc="${rm,,}"
+        local rm_local="${rm_lc%@*}"
+
         local filtered=()
         for a in "${attendees[@]}"; do
-          if [[ "${a,,}" != "${rm,,}" ]]; then filtered+=("$a"); fi
+          local a_lc="${a,,}"
+          local a_local="${a_lc%@*}"
+          if [[ "$a_lc" == "$rm_lc" || "$a_local" == "$rm_local" ]]; then
+            continue
+          fi
+          filtered+=("$a")
         done
         attendees=("${filtered[@]}")
       done
