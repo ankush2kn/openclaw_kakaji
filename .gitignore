@@ -8,3 +8,4 @@ __pycache__/
 
 # Secrets
 client_secret.json
+.secrets/

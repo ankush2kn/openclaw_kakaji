@@ -11,6 +11,13 @@ set -euo pipefail
 WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RULES_FILE="$WORKDIR/EMAIL_CALENDAR_RULES.md"
 
+# Load secrets (for cron environment)
+SECRETS_ENV="$WORKDIR/.secrets/openrouter.env"
+if [[ -f "$SECRETS_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$SECRETS_ENV"
+fi
+
 ACCOUNT="${ACCOUNT:-botbhargava@gmail.com}"
 CALENDAR_ID="${CALENDAR_ID:-botbhargava@gmail.com}"
 TZ="${TZ:-America/Los_Angeles}"
