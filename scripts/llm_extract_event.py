@@ -85,8 +85,8 @@ def extract_thread_text(thread_json: dict) -> dict:
     text = "\n\n".join([*snippets, *bodies]).strip()
     text = re.sub(r"\n{3,}", "\n\n", text)
     # Hard cap to keep costs predictable
-    if len(text) > 12000:
-        text = text[:12000] + "\n\n[TRUNCATED]"
+    if len(text) > 6000:
+        text = text[:6000] + "\n\n[TRUNCATED]"
 
     return {"subject": subject, "from": from_, "date": date, "text": text}
 
@@ -138,8 +138,6 @@ def call_openrouter(prompt: dict) -> dict:
         ],
         "temperature": 0,
         "max_tokens": 500,
-        # Encourage JSON-only compliance
-        "response_format": {"type": "json_object"},
     }
 
     req = urllib.request.Request(
