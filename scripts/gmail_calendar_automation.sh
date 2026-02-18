@@ -358,15 +358,44 @@ PY
         rm=${rm// /}
         if [[ -z "$rm" ]]; then continue; fi
 
-        # Support either full emails (preferred) or a short token like "shuchi" by matching local-part.
         local rm_lc="${rm,,}"
-        local rm_local="${rm_lc%@*}"
+
+        # Resolve non-email tokens via CONTACTS.md (user-maintained).
+        if [[ "$rm_lc" != *"@"* ]]; then
+          resolved=$(python3 - <<'PY' "$WORKDIR/CONTACTS.md" "$rm_lc"
+import re,sys
+path=sys.argv[1]
+name=sys.argv[2].strip().lower()
+try:
+    lines=open(path,'r',encoding='utf-8').read().splitlines()
+except FileNotFoundError:
+    sys.exit(0)
+for ln in lines:
+    ln=ln.strip()
+    if not ln or ln.startswith('#'):
+        continue
+    m=re.match(r"^(.*?)\s*->\s*([^\s]+)\s*$", ln)
+    if not m:
+        continue
+    n=m.group(1).strip().lower()
+    e=m.group(2).strip().lower()
+    if n==name:
+        print(e)
+        sys.exit(0)
+PY
+          )
+          if [[ -n "${resolved:-}" ]]; then
+            rm_lc="$resolved"
+          else
+            # Unknown token; skip removal rather than guessing.
+            continue
+          fi
+        fi
 
         local filtered=()
         for a in "${attendees[@]}"; do
           local a_lc="${a,,}"
-          local a_local="${a_lc%@*}"
-          if [[ "$a_lc" == "$rm_lc" || "$a_local" == "$rm_local" ]]; then
+          if [[ "$a_lc" == "$rm_lc" ]]; then
             continue
           fi
           filtered+=("$a")
