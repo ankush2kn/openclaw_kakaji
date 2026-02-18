@@ -137,7 +137,7 @@ def call_openrouter(prompt: dict) -> dict:
             {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
         ],
         "temperature": 0,
-        "max_tokens": 350,
+        "max_tokens": 500,
         # Encourage JSON-only compliance
         "response_format": {"type": "json_object"},
     }
@@ -159,7 +159,11 @@ def call_openrouter(prompt: dict) -> dict:
         with urllib.request.urlopen(req, timeout=45) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
         data = json.loads(raw)
-        content = data["choices"][0]["message"]["content"]
+        msg = data["choices"][0]["message"]
+        content = msg.get("content")
+        if not content:
+            # Some providers may return tool/empty content on truncation.
+            return {"needs_confirmation": True, "reason": "openrouter_empty_content"}
         out = json.loads(content)
         return out
     except Exception as e:
