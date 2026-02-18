@@ -18,7 +18,7 @@ TZ="${TZ:-America/Los_Angeles}"
 # Default to Pacific time offset; update for DST if needed.
 TZ_SUFFIX="${TZ_SUFFIX:--08:00}"
 
-WINDOW_HOURS="${WINDOW_HOURS:-2}"
+WINDOW_HOURS="${WINDOW_HOURS:-24}"
 AFTER_DATE="${AFTER_DATE:-2026/02/15}"
 
 ALLOWLIST_FROM=(
