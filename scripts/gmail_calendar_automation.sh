@@ -442,13 +442,17 @@ PY
     mark_thread_processed "$tid"
   done
 
+  # Summary to stdout (only)
   echo "Scanned: $scanned eligible threads"
   echo "Acted on: $acted"
   echo "Events created: $created"
   echo "Needs confirmation: $needs_conf"
   if [[ $needs_conf -gt 0 ]]; then
-    printf '%s\n' "" "Items needing confirmation:" 
-    printf '%s\n' "- ${conf_items[@]}"
+    printf '%s\n' "" "Items needing confirmation:"
+    # Print one item per line (avoid bash printf arg issues)
+    for item in "${conf_items[@]}"; do
+      echo "- $item"
+    done
   fi
 }
 
