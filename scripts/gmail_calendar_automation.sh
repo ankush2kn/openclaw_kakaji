@@ -360,35 +360,45 @@ PY
 
         local rm_lc="${rm,,}"
 
-        # Resolve non-email tokens via CONTACTS.md (user-maintained).
-        if [[ "$rm_lc" != *"@"* ]]; then
-          resolved=$(python3 - <<'PY' "$WORKDIR/CONTACTS.md" "$rm_lc"
+        # Resolve tokens via CONTACTS.md (user-maintained).
+        # - If rm is a bare name (e.g., "shuchi"), resolve to email.
+        # - If rm is an email but not canonical (e.g., "shuchi@gmail.com"), try resolving by name=local-part.
+        resolved=$(python3 - <<'PY' "$WORKDIR/CONTACTS.md" "$rm_lc"
 import re,sys
 path=sys.argv[1]
-name=sys.argv[2].strip().lower()
+token=sys.argv[2].strip().lower()
+name=token.split('@',1)[0] if token else ''
 try:
     lines=open(path,'r',encoding='utf-8').read().splitlines()
 except FileNotFoundError:
     sys.exit(0)
 for ln in lines:
     ln=ln.strip()
-    if not ln or ln.startswith('#'):
+    if (not ln) or ln.startswith('#') or ln.startswith('-'):
         continue
     m=re.match(r"^(.*?)\s*->\s*([^\s]+)\s*$", ln)
     if not m:
         continue
     n=m.group(1).strip().lower()
     e=m.group(2).strip().lower()
-    if n==name:
+    if n==token or n==name:
         print(e)
         sys.exit(0)
 PY
-          )
+        )
+
+        if [[ "$rm_lc" != *"@"* ]]; then
+          # bare name must resolve
           if [[ -n "${resolved:-}" ]]; then
             rm_lc="$resolved"
           else
             # Unknown token; skip removal rather than guessing.
             continue
+          fi
+        else
+          # email: if we can canonicalize via contacts, do it
+          if [[ -n "${resolved:-}" ]]; then
+            rm_lc="$resolved"
           fi
         fi
 
