@@ -15,3 +15,10 @@ Notes:
 ## Entries
 
 Shuchi -> shuchicapri@gmail.com
+Ankush -> ankush2kn@yahoo.com
+Ankush -> ankush@gmail.com
+Arnav -> arnavbhargava1@gmail.com
+Ankush -> ankush.bhargava@yahoo.com
+Vinod -> vinodbhargava@gmail.com
+
+

@@ -46,7 +46,8 @@ PROCESSED_LABEL="processed"
 OUTDIR_BASE="$WORKDIR/tmp/automation"
 RUN_TS="$(date -u +"%Y%m%dT%H%M%SZ")"
 OUTDIR="$OUTDIR_BASE/$RUN_TS"
-mkdir -p "$OUTDIR"
+# NOTE: do not mkdir here. We only create OUTDIR if we actually have work to do
+# (eligible threads or errors). This prevents bloat from no-op cron runs.
 
 log() { printf '%s\n' "$*" >&2; }
 
@@ -138,24 +139,39 @@ main() {
 
   ensure_processed_label
 
-  local search_json="$OUTDIR/search.json"
-  search_threads | tee "$search_json" >/dev/null
+  # Search threads first (without writing run artifacts yet)
+  local search_out
+  search_out="$(search_threads)"
 
+  # Determine eligible thread ids
   local thread_ids
-  thread_ids=$(python3 - <<'PY' "$search_json"
+  thread_ids=$(python3 - <<'PY' <<<"$search_out"
 import json,sys
-p=sys.argv[1]
-with open(p,'r',encoding='utf-8') as f:
-    j=json.load(f)
+j=json.load(sys.stdin)
 threads=j.get('threads') or []
 for t in threads:
     tid=t.get('id')
     labels=set(t.get('labels') or [])
-    # Avoid infinite loops: don't process already-labeled threads.
     if tid and 'processed' not in labels:
         print(tid)
 PY
   )
+
+  # If no eligible threads, exit without creating any tmp/automation run folder
+  if [[ -z "${thread_ids// }" ]]; then
+    echo "Scanned: 0 eligible threads"
+    echo "Acted on: 0"
+    echo "Events created: 0"
+    echo "Needs confirmation: 0"
+    return
+  fi
+
+  # Now that we know we have work to do, create OUTDIR and persist search.json
+  mkdir -p "$OUTDIR"
+  local search_json="$OUTDIR/search.json"
+  printf '%s' "$search_out" >"$search_json"
+
+  # thread_ids already computed from search_out
 
   local scanned=0 acted=0 created=0 needs_conf=0
   local conf_items=()

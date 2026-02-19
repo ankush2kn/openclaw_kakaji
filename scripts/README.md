@@ -8,7 +8,9 @@ Entry point:
 ./scripts/gmail_calendar_automation.sh
 ```
 
-This is a **script-first** automation intended to run from cron without using any LLM tokens.
+This is a script-first automation intended to run from cron.
+
+As of 2026-02-18, the **non-ICS** path uses an LLM (OpenRouter) to extract event details + special attendee instructions.
 
 ### Behavior (high level)
 - Searches Gmail for eligible threads:
