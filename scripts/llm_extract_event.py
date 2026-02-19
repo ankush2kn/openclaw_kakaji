@@ -124,7 +124,8 @@ def call_openrouter(prompt: dict) -> dict:
             "Also detect special instructions about who to invite or avoid inviting. "
             "If the sender explicitly says not to invite someone, put their FULL EMAIL ADDRESS in attendees_remove (lowercase). "
             "If the sender says invite someone specific, put them in attendees_add. "
-            "If start/end time, timezone, or date are unclear, set needs_confirmation=true and explain briefly in reason."
+            "If start/end time, timezone, or date are unclear, set needs_confirmation=true and explain briefly in reason. "
+            "If only a start time is given, assume a 60-minute duration and provide end=start+60min."
         ),
         "email": prompt,
         "output_schema": schema,
