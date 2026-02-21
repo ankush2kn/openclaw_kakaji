@@ -407,6 +407,24 @@ PY
       for ad in "${_add[@]}"; do
         ad=${ad// /}
         [[ -z "$ad" ]] && continue
+
+        # Only accept valid email addresses for attendee additions.
+        # If the LLM returns a name like "Ankush" (no @), skip it so we don't
+        # hard-fail calendar creation.
+        if [[ "$ad" != *"@"* ]] || ! python3 - <<'PY' "$ad"; then
+import re,sys
+s=sys.argv[1]
+# Simple sanity regex; Google is stricter but this catches obvious non-emails.
+ok = re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", s) is not None
+sys.exit(0 if ok else 1)
+PY
+          log "Skipping invalid attendee add token: $ad"
+          # Still proceed creating the event, but flag it so you can fix manually.
+          needs_conf=$((needs_conf+1))
+          conf_items+=("$tid: skipped invalid attendee token '$ad' (not an email).")
+          continue
+        fi
+
         attendees+=("$ad")
       done
     fi
