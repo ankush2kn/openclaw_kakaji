@@ -145,17 +145,19 @@ main() {
 
   # Determine eligible thread ids
   local thread_ids
-  thread_ids=$(python3 - <<'PY' <<<"$search_out"
-import json,sys
+  # Extract eligible thread ids from the search JSON.
+  # NOTE: Use either a heredoc OR a here-string, not both. Using both causes
+  # the python program to be replaced by the JSON input (and the script silently
+  # finds 0 threads).
+  thread_ids=$(python3 -c 'import json,sys
 j=json.load(sys.stdin)
-threads=j.get('threads') or []
+threads=j.get("threads") or []
 for t in threads:
-    tid=t.get('id')
-    labels=set(t.get('labels') or [])
-    if tid and 'processed' not in labels:
+    tid=t.get("id")
+    labels=set(t.get("labels") or [])
+    if tid and "processed" not in labels:
         print(tid)
-PY
-  )
+' <<<"$search_out")
 
   # If no eligible threads, exit without creating any tmp/automation run folder
   if [[ -z "${thread_ids// }" ]]; then
