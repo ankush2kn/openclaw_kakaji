@@ -23,7 +23,7 @@ CALENDAR_ID="${CALENDAR_ID:-botbhargava@gmail.com}"
 TZ="${TZ:-America/Los_Angeles}"
 # RFC3339 offset suffix used when we parse naive local times.
 # Default to Pacific time offset; update for DST if needed.
-TZ_SUFFIX="${TZ_SUFFIX:--08:00}"
+TZ_SUFFIX="${TZ_SUFFIX:--08:00}"  # Used to repair naive ISO datetimes when timezone is omitted
 
 WINDOW_HOURS="${WINDOW_HOURS:-24}"
 AFTER_DATE="${AFTER_DATE:-2026/02/15}"
@@ -310,18 +310,15 @@ print('yes' if j.get('needs_confirmation') else 'no')
 PY
     )
 
-    if [[ "$needs" == "yes" ]]; then
-      needs_conf=$((needs_conf+1))
-      reason=$(python3 - <<'PY' "$event_json"
+    local reason
+    reason=$(python3 - <<'PY' "$event_json"
 import json,sys
 j=json.loads(sys.argv[1])
-print(j.get('reason') or 'unknown')
+print(j.get('reason') or '')
 PY
-      )
-      conf_items+=("$tid: needs confirmation ($reason).")
-      continue
-    fi
+    )
 
+    # Extract fields early so we can potentially auto-fix common "needs_confirmation" cases
     local summary start end location agenda
     summary=$(python3 - <<'PY' "$event_json"
 import json,sys
@@ -348,6 +345,37 @@ import json,sys
 j=json.loads(sys.argv[1]); print(j.get('agenda') or '')
 PY
     )
+
+    # Auto-fix: some models emit naive ISO datetimes without timezone.
+    # If we have start+end but no RFC3339 timezone suffix, assume configured TZ_SUFFIX.
+    normalize_rfc3339_tz() {
+      python3 - <<'PY' "$1" "$2"
+import re,sys
+s=sys.argv[1] or ''
+suffix=sys.argv[2] or ''
+# If already has Z or a numeric offset at the end, keep.
+if re.search(r'(Z|[+-]\d\d:\d\d)$', s):
+  print(s); raise SystemExit(0)
+# If it's a naive datetime (has T), append the suffix.
+if 'T' in s and suffix:
+  print(s+suffix); raise SystemExit(0)
+print(s)
+PY
+    }
+
+    if [[ -n "$start" ]]; then start="$(normalize_rfc3339_tz "$start" "$TZ_SUFFIX")"; fi
+    if [[ -n "$end" ]]; then end="$(normalize_rfc3339_tz "$end" "$TZ_SUFFIX")"; fi
+
+    if [[ "$needs" == "yes" ]]; then
+      # If the ONLY issue is missing timezone but we just repaired it, proceed.
+      if [[ -n "$start" && -n "$end" && "$start" == *"T"* && "$end" == *"T"* && ("$reason" == *"timezone"* || "$reason" == *"TZ"*) ]]; then
+        :
+      else
+        needs_conf=$((needs_conf+1))
+        conf_items+=("$tid: needs confirmation (${reason:-unknown}).")
+        continue
+      fi
+    fi
 
     # Attendee instructions
     local add_csv remove_csv send_updates
