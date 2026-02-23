@@ -28,6 +28,9 @@ def main():
 
     token_lc = token.lower()
 
+    # Trim surrounding punctuation that often appears in natural text (e.g. "Shuchi." or "<Shuchi>")
+    token_lc = re.sub(r"^[^a-z0-9@]+|[^a-z0-9@]+$", "", token_lc)
+
     if "@" in token_lc:
         print(token_lc)
         return
@@ -43,7 +46,8 @@ def main():
         ln = ln.strip()
         if not ln or ln.startswith("#") or ln.startswith("-"):
             continue
-        m = re.match(r"^(.*?)\s*->\s*([^\s]+)\s*$", ln)
+        # Allow trailing comments after the email (e.g. "Name -> email (default)")
+        m = re.match(r"^(.*?)\s*->\s*([^\s]+)", ln)
         if not m:
             continue
         n = m.group(1).strip().lower()
