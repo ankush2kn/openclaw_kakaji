@@ -111,6 +111,7 @@ def call_openrouter(prompt: dict) -> dict:
         "summary": "string|null",
         "start": "RFC3339 datetime with timezone offset or Z, or null",
         "end": "RFC3339 datetime with timezone offset or Z, or null",
+        "all_day": "boolean (default false)",
         "location": "string|null",
         "agenda": "string|null",
         "attendees_add": "array of email strings (can be empty)",
@@ -121,11 +122,15 @@ def call_openrouter(prompt: dict) -> dict:
     user = {
         "task": (
             "From the email content, extract: summary, start, end, location, agenda. "
+            "SUMMARY RULE: produce a short title (max 6 words). If the user specified a title in the body, use it. "
+            "TIMEZONE RULE: assume America/Los_Angeles if not explicitly stated; output RFC3339 with correct timezone offset. "
+            "DATE RULE: if year is missing, assume the current year if the date/time is in the future, otherwise the next occurrence in the future. "
+            "DURATION RULE: if only a start time is given, set end = start + 30 minutes. "
+            "All-day RULE: default to timed events unless the user clearly indicates all-day. If all-day, set all_day=true and use date-only YYYY-MM-DD for start/end. "
             "Also detect special instructions about who to invite or avoid inviting. "
             "If the sender explicitly says not to invite someone, put either their email OR their name (e.g., 'Shuchi') in attendees_remove. "
-            "If the sender says invite someone specific, put them in attendees_add. "
-            "If start/end time, timezone, or date are unclear, set needs_confirmation=true and explain briefly in reason. "
-            "If only a start time is given, assume a 60-minute duration and provide end=start+60min."
+            "If the sender says invite someone specific, put them in attendees_add (emails preferred; names allowed if present). "
+            "If required details are missing/ambiguous beyond these defaults, set needs_confirmation=true and explain briefly in reason."
         ),
         "email": prompt,
         "output_schema": schema,
@@ -186,12 +191,20 @@ def main():
     def g(k, default):
         return out.get(k, default) if isinstance(out, dict) else default
 
+    # Enforce max-6-words summary locally as a final guardrail.
+    summary = g("summary", None)
+    if isinstance(summary, str):
+        words = [w for w in re.split(r"\s+", summary.strip()) if w]
+        if len(words) > 6:
+            summary = " ".join(words[:6])
+
     result = {
         "needs_confirmation": bool(g("needs_confirmation", True)),
         "reason": g("reason", None),
-        "summary": g("summary", None),
+        "summary": summary,
         "start": g("start", None),
         "end": g("end", None),
+        "all_day": bool(g("all_day", False)),
         "location": g("location", None),
         "agenda": g("agenda", None),
         "attendees_add": g("attendees_add", []) or [],

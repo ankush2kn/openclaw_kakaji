@@ -26,6 +26,8 @@ TZ="${TZ:-America/Los_Angeles}"
 TZ_SUFFIX="${TZ_SUFFIX:--08:00}"  # Used to repair naive ISO datetimes when timezone is omitted
 
 WINDOW_HOURS="${WINDOW_HOURS:-24}"
+# Optional safety cutoff to prevent scanning very old mail.
+# Set to empty to omit the `after:` Gmail search constraint.
 AFTER_DATE="${AFTER_DATE:-2026/02/15}"
 
 ALLOWLIST_FROM=(
@@ -60,7 +62,7 @@ join_by() {
 }
 
 gmail_query() {
-  # Gmail query: inbox, after date cutoff, newer_than window, from allowlist OR, exclude already processed
+  # Gmail query: inbox, optional after cutoff, newer_than window, from allowlist OR, exclude already processed
   local or_from=""
   for addr in "${ALLOWLIST_FROM[@]}"; do
     if [[ -z "$or_from" ]]; then
@@ -69,8 +71,18 @@ gmail_query() {
       or_from+=" OR from:$addr"
     fi
   done
-  # Parentheses required around OR chain.
-  echo "in:inbox after:$AFTER_DATE newer_than:${WINDOW_HOURS}h -label:$PROCESSED_LABEL (${or_from})"
+
+  local base="in:inbox newer_than:${WINDOW_HOURS}h -label:$PROCESSED_LABEL (${or_from})"
+
+  # Optional safety cutoff
+  if [[ -n "${AFTER_DATE:-}" ]]; then
+    base="in:inbox after:$AFTER_DATE newer_than:${WINDOW_HOURS}h -label:$PROCESSED_LABEL (${or_from})"
+  fi
+
+  # Exclude obvious RSVP responses at query level (defense-in-depth; we also detect via thread content)
+  base+=" -subject:Accepted -subject:Declined -subject:Tentative -subject:Updated"
+
+  echo "$base"
 }
 
 ensure_processed_label() {
@@ -132,6 +144,7 @@ mark_thread_processed() {
 main() {
   require gog
   require python3
+  require date
 
   if [[ ! -f "$RULES_FILE" ]]; then
     log "WARNING: $RULES_FILE not found. Proceeding with built-in defaults." 
@@ -182,6 +195,16 @@ for t in threads:
     scanned=$((scanned+1))
     local tdir="$OUTDIR/thread_$tid"
     mkdir -p "$tdir"
+
+    # Fetch thread JSON early so we can ignore calendar RSVP replies reliably.
+    gog gmail thread get "$tid" --account "$ACCOUNT" --full --json >"$tdir/thread.json"
+
+    if [[ "$(cat "$tdir/thread.json" | "$WORKDIR/scripts/detect_calendar_reply.py")" == "yes" ]]; then
+      acted=$((acted+1))
+      # Mark processed so it doesn't keep showing up in the search window.
+      mark_thread_processed "$tid"
+      continue
+    fi
 
     # Check for ICS
     if [[ "$(thread_has_ics "$tid")" == "yes" ]]; then
@@ -260,6 +283,7 @@ PY
           --from "$start" \
           --to "$end" \
           --all-day \
+          --transparency free \
           ${location:+--location "$location"} \
           --description "${description}\n\nSource thread: $tid" \
           --attendees "$(join_by , "${DEFAULT_ATTENDEES[@]}")" \
@@ -296,8 +320,7 @@ PY
       continue
     fi
 
-    # No ICS: fetch thread (full) and extract event + instructions via LLM
-    gog gmail thread get "$tid" --account "$ACCOUNT" --full --json >"$tdir/thread.json"
+    # No ICS: extract event + instructions via LLM (thread.json already fetched)
 
     local event_json
     event_json=$(cat "$tdir/thread.json" | OPENROUTER_MODEL="${OPENROUTER_MODEL:-openai/gpt-5-nano}" OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" "$WORKDIR/scripts/llm_extract_event.py")
@@ -319,7 +342,7 @@ PY
     )
 
     # Extract fields early so we can potentially auto-fix common "needs_confirmation" cases
-    local summary start end location agenda
+    local summary start end all_day location agenda
     summary=$(python3 - <<'PY' "$event_json"
 import json,sys
 j=json.loads(sys.argv[1]); print(j.get('summary') or '')
@@ -335,6 +358,11 @@ import json,sys
 j=json.loads(sys.argv[1]); print(j.get('end') or '')
 PY
     )
+    all_day=$(python3 - <<'PY' "$event_json"
+import json,sys
+j=json.loads(sys.argv[1]); print('yes' if j.get('all_day') else 'no')
+PY
+    )
     location=$(python3 - <<'PY' "$event_json"
 import json,sys
 j=json.loads(sys.argv[1]); print(j.get('location') or '')
@@ -347,7 +375,7 @@ PY
     )
 
     # Auto-fix: some models emit naive ISO datetimes without timezone.
-    # If we have start+end but no RFC3339 timezone suffix, assume configured TZ_SUFFIX.
+    # If we have start/end but no RFC3339 timezone suffix, assume configured TZ_SUFFIX.
     normalize_rfc3339_tz() {
       python3 - <<'PY' "$1" "$2"
 import re,sys
@@ -363,11 +391,13 @@ print(s)
 PY
     }
 
-    if [[ -n "$start" ]]; then start="$(normalize_rfc3339_tz "$start" "$TZ_SUFFIX")"; fi
-    if [[ -n "$end" ]]; then end="$(normalize_rfc3339_tz "$end" "$TZ_SUFFIX")"; fi
+    if [[ "$all_day" != "yes" ]]; then
+      if [[ -n "$start" ]]; then start="$(normalize_rfc3339_tz "$start" "$TZ_SUFFIX")"; fi
+      if [[ -n "$end" ]]; then end="$(normalize_rfc3339_tz "$end" "$TZ_SUFFIX")"; fi
+    fi
 
     if [[ "$needs" == "yes" ]]; then
-      # If the ONLY issue is missing timezone but we just repaired it, proceed.
+      # We generally proceed if we can repair timezone locally.
       if [[ -n "$start" && -n "$end" && "$start" == *"T"* && "$end" == *"T"* && ("$reason" == *"timezone"* || "$reason" == *"TZ"*) ]]; then
         :
       else
@@ -375,6 +405,32 @@ PY
         conf_items+=("$tid: needs confirmation (${reason:-unknown}).")
         continue
       fi
+    fi
+
+    # If end is missing, default to 30 minutes after start.
+    add_minutes_rfc3339() {
+      python3 - <<'PY' "$1" "$2"
+import sys
+from datetime import datetime, timedelta
+s = sys.argv[1]
+mins = int(sys.argv[2])
+# Python can parse RFC3339-ish strings with offsets via fromisoformat.
+# Normalize trailing Z.
+if s.endswith('Z'):
+    s = s[:-1] + '+00:00'
+try:
+    dt = datetime.fromisoformat(s)
+except Exception:
+    print('')
+    raise SystemExit(0)
+out = dt + timedelta(minutes=mins)
+# Emit RFC3339 with offset (seconds included).
+print(out.isoformat(timespec='seconds'))
+PY
+    }
+
+    if [[ -n "$start" && -z "$end" ]]; then
+      end="$(add_minutes_rfc3339 "$start" 30)"
     fi
 
     # Attendee instructions
@@ -414,7 +470,9 @@ PY
           if [[ -n "${resolved:-}" ]]; then
             rm_lc="$resolved"
           else
-            # Unknown name; skip removal rather than guessing.
+            # Unknown name; require clarification rather than guessing.
+            needs_conf=$((needs_conf+1))
+            conf_items+=("$tid: needs clarification on attendee-remove token '$rm' (not found in CONTACTS.md).")
             continue
           fi
         fi
@@ -436,20 +494,27 @@ PY
         ad=${ad// /}
         [[ -z "$ad" ]] && continue
 
-        # Only accept valid email addresses for attendee additions.
-        # If the LLM returns a name like "Ankush" (no @), skip it so we don't
-        # hard-fail calendar creation.
-        if [[ "$ad" != *"@"* ]] || ! python3 - <<'PY' "$ad"; then
+        # If token is a name (no @), try to resolve via CONTACTS.md; otherwise require clarification.
+        if [[ "$ad" != *"@"* ]]; then
+          resolved=$("$WORKDIR/scripts/resolve_contact.py" "$WORKDIR/CONTACTS.md" "${ad,,}")
+          if [[ -n "${resolved:-}" ]]; then
+            ad="$resolved"
+          else
+            needs_conf=$((needs_conf+1))
+            conf_items+=("$tid: needs clarification on attendee token '$ad' (not an email; not found in CONTACTS.md).")
+            continue
+          fi
+        fi
+
+        # Validate email.
+        if ! python3 - <<'PY' "$ad"; then
 import re,sys
 s=sys.argv[1]
-# Simple sanity regex; Google is stricter but this catches obvious non-emails.
 ok = re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", s) is not None
 sys.exit(0 if ok else 1)
 PY
-          log "Skipping invalid attendee add token: $ad"
-          # Still proceed creating the event, but flag it so you can fix manually.
           needs_conf=$((needs_conf+1))
-          conf_items+=("$tid: skipped invalid attendee token '$ad' (not an email).")
+          conf_items+=("$tid: invalid attendee email '$ad'.")
           continue
         fi
 
@@ -475,6 +540,13 @@ PY
       continue
     fi
 
+    # If summary is empty, require clarification (LLM should have produced it).
+    if [[ -z "${summary// }" ]]; then
+      needs_conf=$((needs_conf+1))
+      conf_items+=("$tid: missing summary/title after LLM extraction.")
+      continue
+    fi
+
     # Duplicate check: search calendar for same summary, and match exact start/end.
     if gog calendar search "$summary" --account "$ACCOUNT" --json | python3 - <<'PY' "$start" "$end"
 import json,sys
@@ -493,31 +565,66 @@ PY
       continue
     fi
 
+    # If we accumulated any clarification-needed items for this thread, skip creating the event.
+    # (We don't want partial/incorrect attendee lists.)
+    # Note: needs_conf is global, but we only proceed here if we've not `continue`d.
+
     # Create event with custom attendees + optional send_updates
     attendees_csv="$(join_by , "${attendees[@]}")"
 
-    if [[ -n "$send_updates" ]]; then
-      gog calendar create "$CALENDAR_ID" \
-        --account "$ACCOUNT" \
-        --summary "$summary" \
-        --from "$start" \
-        --to "$end" \
-        ${location:+--location "$location"} \
-        --description "${agenda:-}\n\nSource thread: $tid" \
-        --attendees "$attendees_csv" \
-        --send-updates "$send_updates" \
-        --json >"$tdir/created_event.json"
+    # All-day events should not block the calendar.
+    if [[ "$all_day" == "yes" ]]; then
+      if [[ -n "$send_updates" ]]; then
+        gog calendar create "$CALENDAR_ID" \
+          --account "$ACCOUNT" \
+          --summary "$summary" \
+          --from "$start" \
+          --to "$end" \
+          --all-day \
+          --transparency free \
+          ${location:+--location "$location"} \
+          --description "${agenda:-}\n\nSource thread: $tid" \
+          --attendees "$attendees_csv" \
+          --send-updates "$send_updates" \
+          --json >"$tdir/created_event.json"
+      else
+        gog calendar create "$CALENDAR_ID" \
+          --account "$ACCOUNT" \
+          --summary "$summary" \
+          --from "$start" \
+          --to "$end" \
+          --all-day \
+          --transparency free \
+          ${location:+--location "$location"} \
+          --description "${agenda:-}\n\nSource thread: $tid" \
+          --attendees "$attendees_csv" \
+          --send-updates all \
+          --json >"$tdir/created_event.json"
+      fi
     else
-      gog calendar create "$CALENDAR_ID" \
-        --account "$ACCOUNT" \
-        --summary "$summary" \
-        --from "$start" \
-        --to "$end" \
-        ${location:+--location "$location"} \
-        --description "${agenda:-}\n\nSource thread: $tid" \
-        --attendees "$attendees_csv" \
-        --send-updates all \
-        --json >"$tdir/created_event.json"
+      if [[ -n "$send_updates" ]]; then
+        gog calendar create "$CALENDAR_ID" \
+          --account "$ACCOUNT" \
+          --summary "$summary" \
+          --from "$start" \
+          --to "$end" \
+          ${location:+--location "$location"} \
+          --description "${agenda:-}\n\nSource thread: $tid" \
+          --attendees "$attendees_csv" \
+          --send-updates "$send_updates" \
+          --json >"$tdir/created_event.json"
+      else
+        gog calendar create "$CALENDAR_ID" \
+          --account "$ACCOUNT" \
+          --summary "$summary" \
+          --from "$start" \
+          --to "$end" \
+          ${location:+--location "$location"} \
+          --description "${agenda:-}\n\nSource thread: $tid" \
+          --attendees "$attendees_csv" \
+          --send-updates all \
+          --json >"$tdir/created_event.json"
+      fi
     fi
 
     created=$((created+1))
