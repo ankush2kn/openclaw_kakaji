@@ -298,7 +298,7 @@ PY
           --all-day \
           --transparency free \
           ${location:+--location "$location"} \
-          --description "${description}\n\nSource thread: $tid" \
+          --description "$(printf '%s\n\nSource thread: %s' "$description" "$tid")" \
           --attendees "$(join_by , "${DEFAULT_ATTENDEES[@]}")" \
           --send-updates all \
           --json >"$tdir/created_event.json"
@@ -324,7 +324,7 @@ PY
           end="${end}${TZ_SUFFIX}"
         fi
 
-        create_calendar_event "$summary" "$start" "$end" "$location" "${description}\n\nSource thread: $tid" >"$tdir/created_event.json"
+        create_calendar_event "$summary" "$start" "$end" "$location" "$(printf '%s\n\nSource thread: %s' "$description" "$tid")" >"$tdir/created_event.json"
       fi
 
       created=$((created+1))
@@ -597,7 +597,7 @@ PY
           --all-day \
           --transparency free \
           ${location:+--location "$location"} \
-          --description "${agenda:-}\n\nSource thread: $tid" \
+          --description "$(printf '%s\n\nSource thread: %s' "${agenda:-}" "$tid")" \
           --attendees "$attendees_csv" \
           --send-updates "$send_updates" \
           --json >"$tdir/created_event.json"
@@ -611,7 +611,7 @@ PY
           --all-day \
           --transparency free \
           ${location:+--location "$location"} \
-          --description "${agenda:-}\n\nSource thread: $tid" \
+          --description "$(printf '%s\n\nSource thread: %s' "${agenda:-}" "$tid")" \
           --attendees "$attendees_csv" \
           --send-updates all \
           --json >"$tdir/created_event.json"
@@ -625,7 +625,7 @@ PY
           --from "$start" \
           --to "$end" \
           ${location:+--location "$location"} \
-          --description "${agenda:-}\n\nSource thread: $tid" \
+          --description "$(printf '%s\n\nSource thread: %s' "${agenda:-}" "$tid")" \
           --attendees "$attendees_csv" \
           --send-updates "$send_updates" \
           --json >"$tdir/created_event.json"
@@ -637,7 +637,7 @@ PY
           --from "$start" \
           --to "$end" \
           ${location:+--location "$location"} \
-          --description "${agenda:-}\n\nSource thread: $tid" \
+          --description "$(printf '%s\n\nSource thread: %s' "${agenda:-}" "$tid")" \
           --attendees "$attendees_csv" \
           --send-updates all \
           --json >"$tdir/created_event.json"
