@@ -79,8 +79,9 @@ gmail_query() {
     base="in:inbox after:$AFTER_DATE newer_than:${WINDOW_HOURS}h -label:$PROCESSED_LABEL (${or_from})"
   fi
 
-  # Exclude obvious RSVP responses at query level (defense-in-depth; we also detect via thread content)
-  base+=" -subject:Accepted -subject:Declined -subject:Tentative -subject:Updated"
+  # NOTE: We do NOT exclude RSVP responses at query level, because Gmail search
+  # cannot reliably express "only if organizer is botbhargava@gmail.com".
+  # RSVP filtering is handled by parsing the thread's text/calendar parts.
 
   echo "$base"
 }

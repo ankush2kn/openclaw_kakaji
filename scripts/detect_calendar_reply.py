@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Detect whether a Gmail thread contains a calendar *response* (REPLY).
+"""Detect whether a Gmail thread contains a calendar *response* (REPLY)
+*for events organized by botbhargava@gmail.com*.
 
 We want to ignore RSVP responses like:
-- Subject: Accepted:/Declined:/Tentative:
-- text/calendar parts with METHOD:REPLY
+- Subject: Accepted:/Declined:/Tentative:  (heuristic only)
+- text/calendar parts with METHOD:REPLY + ORGANIZER matching botbhargava@gmail.com
 
 Input: Gmail thread JSON on stdin (from `gog gmail thread get --full --json`).
 Output: 'yes' or 'no' on stdout.
+
+Rule: return 'yes' ONLY when we can confirm the calendar part is a reply
+(METHOD:REPLY) AND the organizer email is botbhargava@gmail.com.
 
 This is best-effort but aims to be conservative: if it looks like a reply,
 return 'yes'.
@@ -45,6 +49,23 @@ def _get_header(headers, name: str) -> str:
     return ""
 
 
+ORGANIZER_EMAIL = "botbhargava@gmail.com"
+
+
+def _extract_organizer_email(ics_text: str) -> str:
+    # Matches lines like:
+    # ORGANIZER;CN=Bot:mailto:botbhargava@gmail.com
+    # ORGANIZER:mailto:botbhargava@gmail.com
+    m = re.search(r"^ORGANIZER[^:\n\r]*:mailto:([^\s\n\r]+)", ics_text, flags=re.I | re.M)
+    if not m:
+        return ""
+    return (m.group(1) or "").strip().lower()
+
+
+def _has_method_reply(ics_text: str) -> bool:
+    return re.search(r"\bMETHOD:REPLY\b", ics_text, re.I) is not None
+
+
 def main() -> int:
     try:
         thread_json = json.load(sys.stdin)
@@ -72,14 +93,17 @@ def main() -> int:
             ctype = _get_header(ph, "content-type").lower()
 
             if "text/calendar" in mt or "text/calendar" in ctype:
-                if "method=reply" in ctype.replace(" ", ""):
-                    print("yes")
-                    return 0
-
                 body_data = (part.get("body") or {}).get("data")
                 txt = _b64url_decode(body_data) if body_data else ""
-                # Some calendar parts are not base64 in body.data, but if present, check.
-                if re.search(r"\bMETHOD:REPLY\b", txt, re.I):
+
+                # Determine method reply (from header param or body)
+                header_has_reply = "method=reply" in ctype.replace(" ", "")
+                body_has_reply = _has_method_reply(txt)
+                if not (header_has_reply or body_has_reply):
+                    continue
+
+                organizer = _extract_organizer_email(txt)
+                if organizer == ORGANIZER_EMAIL:
                     print("yes")
                     return 0
 
