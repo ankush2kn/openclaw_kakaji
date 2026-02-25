@@ -21,6 +21,13 @@ fi
 ACCOUNT="${ACCOUNT:-botbhargava@gmail.com}"
 CALENDAR_ID="${CALENDAR_ID:-botbhargava@gmail.com}"
 TZ="${TZ:-America/Los_Angeles}"
+
+# If DRY_RUN=1, do not modify Gmail/Calendar; pass --dry-run to gog create calls.
+DRY_RUN="${DRY_RUN:-0}"
+GOG_DRY_FLAG=""
+if [[ "$DRY_RUN" == "1" ]]; then
+  GOG_DRY_FLAG="--dry-run"
+fi
 # RFC3339 offset suffix used when we parse naive local times.
 # Default to Pacific time offset; update for DST if needed.
 TZ_SUFFIX="${TZ_SUFFIX:--08:00}"  # Used to repair naive ISO datetimes when timezone is omitted
@@ -126,6 +133,7 @@ create_calendar_event() {
   attendees_csv="$(join_by , "${DEFAULT_ATTENDEES[@]}")"
 
   gog calendar create "$CALENDAR_ID" \
+    $GOG_DRY_FLAG \
     --account "$ACCOUNT" \
     --summary "$summary" \
     --from "$start" \
@@ -139,6 +147,9 @@ create_calendar_event() {
 
 mark_thread_processed() {
   local thread_id="$1"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    return
+  fi
   gog gmail thread modify "$thread_id" --account "$ACCOUNT" --add "$PROCESSED_LABEL" --json >/dev/null
 }
 
@@ -279,6 +290,7 @@ PY
         )
         # Create all-day event
         gog calendar create "$CALENDAR_ID" \
+          $GOG_DRY_FLAG \
           --account "$ACCOUNT" \
           --summary "$summary" \
           --from "$start" \
@@ -304,12 +316,12 @@ print(j['end'].get('dateTime') or '')
 PY
         )
 
-        # If timeZone is missing (floating), assume configured TZ
+        # If timeZone is missing (floating), assume configured TZ_SUFFIX.
         if [[ "$start" != *"Z"* && "$start" != *"+"* && "$start" != *"-"* ]]; then
-          # ISO without offset; append TZ offset is hard — instead, fail to confirmation.
-          needs_conf=$((needs_conf+1))
-          conf_items+=("$tid: ICS has floating times (no TZ).")
-          continue
+          start="${start}${TZ_SUFFIX}"
+        fi
+        if [[ "$end" != *"Z"* && "$end" != *"+"* && "$end" != *"-"* ]]; then
+          end="${end}${TZ_SUFFIX}"
         fi
 
         create_calendar_event "$summary" "$start" "$end" "$location" "${description}\n\nSource thread: $tid" >"$tdir/created_event.json"
@@ -577,6 +589,7 @@ PY
     if [[ "$all_day" == "yes" ]]; then
       if [[ -n "$send_updates" ]]; then
         gog calendar create "$CALENDAR_ID" \
+          $GOG_DRY_FLAG \
           --account "$ACCOUNT" \
           --summary "$summary" \
           --from "$start" \
@@ -590,6 +603,7 @@ PY
           --json >"$tdir/created_event.json"
       else
         gog calendar create "$CALENDAR_ID" \
+          $GOG_DRY_FLAG \
           --account "$ACCOUNT" \
           --summary "$summary" \
           --from "$start" \
@@ -605,6 +619,7 @@ PY
     else
       if [[ -n "$send_updates" ]]; then
         gog calendar create "$CALENDAR_ID" \
+          $GOG_DRY_FLAG \
           --account "$ACCOUNT" \
           --summary "$summary" \
           --from "$start" \
@@ -616,6 +631,7 @@ PY
           --json >"$tdir/created_event.json"
       else
         gog calendar create "$CALENDAR_ID" \
+          $GOG_DRY_FLAG \
           --account "$ACCOUNT" \
           --summary "$summary" \
           --from "$start" \
