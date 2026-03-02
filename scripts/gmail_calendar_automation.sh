@@ -207,7 +207,9 @@ for t in threads:
     scanned=$((scanned+1))
     local tdir="$OUTDIR/thread_$tid"
     mkdir -p "$tdir"
+    local fail_log="$tdir/failure.log"
 
+    {
     # Fetch thread JSON early so we can ignore calendar RSVP replies reliably.
     gog gmail thread get "$tid" --account "$ACCOUNT" --full --json >"$tdir/thread.json"
 
@@ -648,6 +650,14 @@ PY
     acted=$((acted+1))
 
     mark_thread_processed "$tid"
+    } 2>"$fail_log" || {
+      needs_conf=$((needs_conf+1))
+      conf_items+=("$tid: processing failed (see $fail_log).")
+      # Do not mark processed; it will retry on the next run.
+    }
+
+    # If nothing was written, remove empty failure log.
+    [[ -s "$fail_log" ]] || rm -f "$fail_log" || true
   done
 
   # Summary to stdout (only)
