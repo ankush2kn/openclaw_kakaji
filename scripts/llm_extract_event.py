@@ -168,7 +168,19 @@ def call_openrouter(prompt: dict) -> dict:
         if not content:
             # Some providers may return tool/empty content on truncation.
             return {"needs_confirmation": True, "reason": "openrouter_empty_content"}
-        out = json.loads(content)
+        # Some models (notably Gemini) may wrap JSON in markdown fences.
+        # Strip common ```json ... ``` / ``` ... ``` wrappers before parsing.
+        s = content.strip()
+        if s.startswith("```"):
+            # Remove leading fence line
+            lines = s.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            # Remove trailing fence line
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            s = "\n".join(lines).strip()
+        out = json.loads(s)
         return out
     except Exception as e:
         return {
