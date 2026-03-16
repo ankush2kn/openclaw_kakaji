@@ -1,11 +1,20 @@
-# OpenClaw runtime / local state
-.openclaw/
+# Secrets
+.secrets/
+client_secret.json
+**/*auth-profiles.json
+
+# Runtime / logs / artifacts
 tmp/
+*.log
+*.out
+script_output.txt
+.gmail*
+
+# Local notes
+.telegram_message
+.telegram_note
+mail_reminder_note.txt
 
 # Python
 __pycache__/
 *.pyc
-
-# Secrets
-client_secret.json
-.secrets/
