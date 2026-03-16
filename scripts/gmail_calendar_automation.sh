@@ -150,7 +150,8 @@ mark_thread_processed() {
   if [[ "$DRY_RUN" == "1" ]]; then
     return
   fi
-  gog gmail thread modify "$thread_id" --account "$ACCOUNT" --add "$PROCESSED_LABEL" --json >/dev/null
+  # Mark as processed and also as read (remove UNREAD label) while keeping it in Inbox.
+  gog gmail thread modify "$thread_id" --account "$ACCOUNT" --add "$PROCESSED_LABEL" --remove UNREAD --json >/dev/null
 }
 
 main() {
