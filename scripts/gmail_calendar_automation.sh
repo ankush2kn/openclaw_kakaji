@@ -663,6 +663,12 @@ PY
   echo "Acted on: $acted"
   echo "Events created: $created"
   echo "Needs confirmation: $needs_conf"
+
+  # Persist last-run status for cron + debugging
+  mkdir -p "$OUTDIR_BASE"
+  printf '{ "acted": %s, "created": %s, "needs_confirmation": %s }\n' "$acted" "$created" "$needs_conf" >"$OUTDIR_BASE/last_run_status.json"
+  printf '%s\n' "Scanned: $scanned eligible threads" "Acted on: $acted" "Events created: $created" "Needs confirmation: $needs_conf" >"$OUTDIR_BASE/gmail_calendar_automation_last_run.log"
+
   if [[ $needs_conf -gt 0 ]]; then
     printf '%s\n' "" "Items needing confirmation:"
     # Print one item per line (avoid bash printf arg issues)
