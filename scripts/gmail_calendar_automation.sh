@@ -486,9 +486,7 @@ PY
           if [[ -n "${resolved:-}" ]]; then
             rm_lc="$resolved"
           else
-            # Unknown name; require clarification rather than guessing.
-            needs_conf=$((needs_conf+1))
-            conf_items+=("$tid: needs clarification on attendee-remove token '$rm' (not found in CONTACTS.md).")
+            # Unknown name; ignore (per user preference: do not require clarification)
             continue
           fi
         fi
@@ -516,8 +514,7 @@ PY
           if [[ -n "${resolved:-}" ]]; then
             ad="$resolved"
           else
-            needs_conf=$((needs_conf+1))
-            conf_items+=("$tid: needs clarification on attendee token '$ad' (not an email; not found in CONTACTS.md).")
+            # Unknown name; ignore (per user preference: do not require clarification)
             continue
           fi
         fi
