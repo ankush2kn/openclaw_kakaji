@@ -82,9 +82,11 @@ def main() -> int:
         payload = m.get("payload") or {}
         headers = payload.get("headers") or []
         subject = _get_header(headers, "subject").strip()
-        if subject and subj_re.search(subject):
-            print("yes")
-            return 0
+
+        # Heuristic subject check is NOT sufficient by itself.
+        # Only treat as a calendar reply if we also find a text/calendar part with METHOD:REPLY
+        # organized by botbhargava@gmail.com.
+        subject_looks_like_reply = bool(subject and subj_re.search(subject))
 
         # Look for text/calendar parts and METHOD:REPLY either in headers or body
         for part in _walk_parts(payload):
@@ -107,6 +109,8 @@ def main() -> int:
                     print("yes")
                     return 0
 
+    # If it only *looked* like a reply from the subject, but we didn't confirm via ICS,
+    # be conservative and do NOT classify it as a reply.
     print("no")
     return 0
 
