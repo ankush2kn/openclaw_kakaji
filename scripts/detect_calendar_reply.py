@@ -87,6 +87,7 @@ def main() -> int:
     msgs = thread.get("messages") or []
 
     subj_re = re.compile(r"^(accepted|declined|tentative|updated):\s*", re.I)
+    subj_mentions_organizer_re = re.compile(r"\(" + re.escape(ORGANIZER_EMAIL) + r"\)", re.I)
 
     for m in msgs:
         payload = m.get("payload") or {}
@@ -97,6 +98,7 @@ def main() -> int:
         # Only treat as a calendar reply if we also find a text/calendar part with METHOD:REPLY
         # organized by botbhargava@gmail.com.
         subject_looks_like_reply = bool(subject and subj_re.search(subject))
+        subject_mentions_organizer = bool(subject and subj_mentions_organizer_re.search(subject))
 
         # Look for text/calendar parts and METHOD:REPLY either in headers or body
         for part in _walk_parts(payload):
@@ -122,8 +124,18 @@ def main() -> int:
                     print("yes")
                     return 0
 
-    # If it only *looked* like a reply from the subject, but we didn't confirm via ICS,
-    # be conservative and do NOT classify it as a reply.
+    # If it *looks* like an RSVP from the subject AND it explicitly names our organizer
+    # (e.g. "(botbhargava@gmail.com)"), treat it as a reply even if the calendar part is
+    # missing. This avoids creating bogus events from plain-text RSVP notifications.
+    # We computed flags per-message; easiest is to re-scan subjects quickly.
+    for m in msgs:
+        payload = m.get("payload") or {}
+        headers = payload.get("headers") or []
+        subject = _get_header(headers, "subject").strip()
+        if subject and subj_re.search(subject) and subj_mentions_organizer_re.search(subject):
+            print("yes")
+            return 0
+
     print("no")
     return 0
 
