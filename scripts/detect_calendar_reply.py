@@ -66,6 +66,16 @@ def _has_method_reply(ics_text: str) -> bool:
     return re.search(r"\bMETHOD:REPLY\b", ics_text, re.I) is not None
 
 
+def _has_rsvp_partstat(ics_text: str) -> bool:
+    """Some clients send RSVP updates that don't carry METHOD:REPLY reliably.
+
+    We treat an ICS as a response if it contains an attendee PARTSTAT that
+    indicates an RSVP outcome.
+    """
+
+    return re.search(r"\bPARTSTAT=(ACCEPTED|DECLINED|TENTATIVE)\b", ics_text, re.I) is not None
+
+
 def main() -> int:
     try:
         thread_json = json.load(sys.stdin)
@@ -98,10 +108,13 @@ def main() -> int:
                 body_data = (part.get("body") or {}).get("data")
                 txt = _b64url_decode(body_data) if body_data else ""
 
-                # Determine method reply (from header param or body)
+                # Determine whether this looks like an RSVP/response.
+                # Primary signal: METHOD=REPLY (header param or in-body).
+                # Secondary signal: PARTSTAT=ACCEPTED/DECLINED/TENTATIVE (some clients).
                 header_has_reply = "method=reply" in ctype.replace(" ", "")
                 body_has_reply = _has_method_reply(txt)
-                if not (header_has_reply or body_has_reply):
+                body_has_partstat = _has_rsvp_partstat(txt)
+                if not (header_has_reply or body_has_reply or body_has_partstat):
                     continue
 
                 organizer = _extract_organizer_email(txt)
