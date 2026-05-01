@@ -60,6 +60,13 @@ OUTDIR="$OUTDIR_BASE/$RUN_TS"
 
 log() { printf '%s\n' "$*" >&2; }
 
+write_last_run_status() {
+  local scanned="$1" acted="$2" created="$3" needs_conf="$4"
+  mkdir -p "$OUTDIR_BASE"
+  printf '{ "acted": %s, "created": %s, "needs_confirmation": %s }\n' "$acted" "$created" "$needs_conf" >"$OUTDIR_BASE/last_run_status.json"
+  printf '%s\n' "Scanned: $scanned eligible threads" "Acted on: $acted" "Events created: $created" "Needs confirmation: $needs_conf" >"$OUTDIR_BASE/gmail_calendar_automation_last_run.log"
+}
+
 require() {
   command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 127; }
 }
@@ -185,12 +192,14 @@ for t in threads:
         print(tid)
 ' <<<"$search_out")
 
-  # If no eligible threads, exit without creating any tmp/automation run folder
+  # If no eligible threads, exit without creating any tmp/automation run folder.
+  # Still persist last-run status so cron/monitors don't treat no-op as a failure.
   if [[ -z "${thread_ids// }" ]]; then
     echo "Scanned: 0 eligible threads"
     echo "Acted on: 0"
     echo "Events created: 0"
     echo "Needs confirmation: 0"
+    write_last_run_status 0 0 0 0
     return
   fi
 
@@ -665,9 +674,7 @@ PY
   echo "Needs confirmation: $needs_conf"
 
   # Persist last-run status for cron + debugging
-  mkdir -p "$OUTDIR_BASE"
-  printf '{ "acted": %s, "created": %s, "needs_confirmation": %s }\n' "$acted" "$created" "$needs_conf" >"$OUTDIR_BASE/last_run_status.json"
-  printf '%s\n' "Scanned: $scanned eligible threads" "Acted on: $acted" "Events created: $created" "Needs confirmation: $needs_conf" >"$OUTDIR_BASE/gmail_calendar_automation_last_run.log"
+  write_last_run_status "$scanned" "$acted" "$created" "$needs_conf"
 
   if [[ $needs_conf -gt 0 ]]; then
     printf '%s\n' "" "Items needing confirmation:"
