@@ -27,3 +27,4 @@ last_noop_announce_epoch.txt
 .telegram_input
 scripts/last_run_marker
 0
+cron_outputs/
